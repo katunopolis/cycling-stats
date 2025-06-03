@@ -1,0 +1,37 @@
+[style]
+# Use Google's style guide
+based_on_style = google
+
+# Line length
+column_limit = 80
+
+# Indentation
+indent_width = 4
+continuation_indent_width = 4
+
+# Blank lines
+blank_line_before_nested_class_or_def = true
+blank_line_before_class_docstring = false
+blank_line_before_module_docstring = false
+
+# Imports
+split_imports = true
+join_multiple_lines = true
+
+# Comments and docstrings
+coalesce_brackets = true
+dedent_closing_brackets = true
+each_dict_entry_on_separate_line = true
+
+# Function definitions
+spaces_before_comment = 2
+split_before_first_argument = false
+split_before_named_assigns = true
+
+# Other formatting
+align_closing_bracket_with_visual_indent = true
+allow_multiline_dictionary_keys = false
+allow_multiline_lambdas = false
+arithmetic_precedence_indication = false
+split_before_bitwise_operator = true
+split_before_logical_operator = true 
