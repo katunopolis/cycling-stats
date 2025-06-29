@@ -1,0 +1,204 @@
+OFF-META CLIMB DETECTION RULES
+==============================
+
+This document outlines alternative climb detection criteria that relax the standard
+Garmin rules to capture climbs that might be missed by the stricter criteria.
+These "off-meta" rules are designed to identify climbs that are meaningful to
+riders but don't meet the official Garmin climb detection standards.
+
+OVERVIEW
+--------
+Off-meta climbs are identified using relaxed criteria that capture:
+- Shorter but steeper climbs
+- Longer but gentler climbs  
+- Climbs with more descent allowance
+- Climbs that start/end differently than Garmin expects
+
+PRIMARY OFF-META CRITERIA
+-------------------------
+
+A climb is considered significant under off-meta rules if it meets ANY of the
+following criteria sets:
+
+SET 1: SHORT BUT STEEP CLIMBS
+- Minimum horizontal distance: 150 meters (vs 300m Garmin)
+- Minimum elevation gain: 8 meters (vs 10m Garmin)
+- Average gradient: ≥4% (vs 3% Garmin)
+- Purpose: Captures short, punchy climbs common in urban riding
+
+SET 2: LONG BUT GENTLE CLIMBS
+- Minimum horizontal distance: 500 meters (vs 300m Garmin)
+- Minimum elevation gain: 15 meters (vs 10m Garmin)
+- Average gradient: ≥2% (vs 3% Garmin)
+- Purpose: Captures long, gradual climbs that feel significant
+
+SET 3: UNDULATING CLIMBS
+- Minimum horizontal distance: 400 meters (vs 300m Garmin)
+- Minimum elevation gain: 12 meters (vs 10m Garmin)
+- Average gradient: ≥2.5% (vs 3% Garmin)
+- Maximum cumulative descent: 10 meters (vs 5m Garmin)
+- Purpose: Captures climbs with rolling terrain
+
+SET 4: URBAN/STOP-START CLIMBS
+- Minimum horizontal distance: 200 meters (vs 300m Garmin)
+- Minimum elevation gain: 6 meters (vs 10m Garmin)
+- Average gradient: ≥3.5% (vs 3% Garmin)
+- Allows for traffic stops (speed < 1 m/s for up to 30 seconds)
+- Purpose: Captures climbs interrupted by traffic lights
+
+DETAILED OFF-META PARAMETERS
+----------------------------
+
+1. RELAXED DISTANCE THRESHOLDS
+   - Short climbs: 150m minimum
+   - Standard climbs: 200m minimum
+   - Long climbs: 400-500m minimum
+   - Purpose: Accommodate different riding environments
+
+2. RELAXED ELEVATION GAIN THRESHOLDS
+   - Minimum: 6 meters (vs 10m Garmin)
+   - Standard: 8-12 meters
+   - Long climbs: 15+ meters
+   - Purpose: Capture climbs that feel significant despite modest elevation
+
+3. RELAXED GRADIENT THRESHOLDS
+   - Gentle climbs: ≥2% (vs 3% Garmin)
+   - Standard climbs: ≥2.5-3.5%
+   - Steep climbs: ≥4%
+   - Purpose: Include gradual climbs that are still challenging
+
+4. INCREASED DESCENT ALLOWANCE
+   - Standard: 8 meters (vs 5m Garmin)
+   - Undulating: 10-12 meters
+   - Mountain climbs: 15 meters
+   - Purpose: Handle complex terrain with multiple small descents
+
+5. RELAXED FLAT SECTION THRESHOLD
+   - Value: 0.5% (vs 1% Garmin)
+   - Purpose: Allow more flat sections within climbs
+
+6. TRAFFIC-AWARE DETECTION
+   - Allows speed drops to <1 m/s for up to 30 seconds
+   - Continues climb detection after traffic stops
+   - Purpose: Handle urban riding with traffic lights
+
+OFF-META CLIMB CATEGORIES
+-------------------------
+
+1. PUNCHY CLIMBS
+   - Distance: 150-300m
+   - Gradient: 4-8%
+   - Elevation: 8-20m
+   - Typical: Short, steep sections in urban areas
+
+2. GRADUAL CLIMBS
+   - Distance: 500m-2km
+   - Gradient: 2-3%
+   - Elevation: 15-60m
+   - Typical: Long, gentle inclines on country roads
+
+3. ROLLING CLIMBS
+   - Distance: 400m-1km
+   - Gradient: 2.5-4%
+   - Elevation: 12-40m
+   - Descent allowance: 10m
+   - Typical: Undulating terrain with small descents
+
+4. URBAN CLIMBS
+   - Distance: 200-500m
+   - Gradient: 3.5-6%
+   - Elevation: 6-25m
+   - Traffic-aware: Yes
+   - Typical: City streets with traffic interruptions
+
+5. MOUNTAIN CLIMBS
+   - Distance: 1km+
+   - Gradient: 3-8%
+   - Elevation: 50m+
+   - Descent allowance: 15m
+   - Typical: Extended climbs in mountainous terrain
+
+IMPLEMENTATION SUGGESTIONS
+-------------------------
+
+1. MULTI-TIER DETECTION
+   - Run Garmin rules first
+   - Run off-meta rules on remaining sections
+   - Combine results with clear labeling
+
+2. CONFIDENCE SCORING
+   - Garmin climbs: 100% confidence
+   - Off-meta climbs: 60-90% confidence based on criteria match
+   - Display confidence level in results
+
+3. CATEGORIZATION
+   - Label climbs as "Garmin" or "Off-meta"
+   - Sub-categorize off-meta climbs by type
+   - Provide reasoning for classification
+
+4. VISUALIZATION
+   - Different colors for Garmin vs off-meta climbs
+   - Confidence indicators in plots
+   - Separate summary sections
+
+ADVANTAGES OF OFF-META RULES
+----------------------------
+
+1. INCLUSIVITY
+   - Captures climbs meaningful to different riding styles
+   - Accommodates various terrain types
+   - Recognizes urban riding challenges
+
+2. FLEXIBILITY
+   - Adapts to local riding conditions
+   - Handles different fitness levels
+   - Considers subjective difficulty
+
+3. COMPREHENSIVENESS
+   - Provides complete climb analysis
+   - Captures edge cases missed by strict rules
+   - Offers multiple perspectives on ride difficulty
+
+DISADVANTAGES AND CONSIDERATIONS
+-------------------------------
+
+1. SUBJECTIVITY
+   - Less standardized than Garmin rules
+   - May include sections some riders don't consider climbs
+   - Requires careful parameter tuning
+
+2. COMPLEXITY
+   - Multiple rule sets to maintain
+   - More complex implementation
+   - Potential for conflicting detections
+
+3. VALIDATION
+   - Harder to validate against established standards
+   - May require user feedback for tuning
+   - Risk of false positives
+
+RECOMMENDED USAGE
+-----------------
+
+1. COMPLEMENTARY ANALYSIS
+   - Use alongside Garmin rules, not as replacement
+   - Provide both perspectives to users
+   - Let users choose which climbs to focus on
+
+2. CONTEXT-AWARE APPLICATION
+   - Apply different rule sets based on ride type
+   - Urban rides: Favor traffic-aware rules
+   - Mountain rides: Favor extended climb rules
+   - Mixed terrain: Use comprehensive approach
+
+3. USER CUSTOMIZATION
+   - Allow users to adjust thresholds
+   - Provide preset configurations for different riding styles
+   - Enable/disable specific rule sets
+
+REFERENCES
+----------
+- Based on relaxation of Garmin Connect climb detection algorithm
+- Designed to complement standard climb analysis
+- Intended for comprehensive ride analysis
+- Supports diverse riding environments and styles 
