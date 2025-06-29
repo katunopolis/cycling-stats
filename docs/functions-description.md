@@ -252,6 +252,109 @@ This comprehensive export allows for:
 - Training load monitoring
 - Fitness progression tracking
 
+### `merge_rides(fit_files)`
+
+Combines multiple FIT files from the same day into a single comprehensive analysis.
+
+**Purpose:**
+- Merge multiple ride segments into one continuous analysis
+- Useful when a single ride was recorded as multiple files
+- Maintains data continuity and accurate metric calculations
+
+**Implementation:**
+1. Processes each FIT file in chronological order:
+   - Extracts all data records
+   - Accumulates calories from each segment
+   - Maintains timestamp continuity
+   - Tracks segment-specific metrics independently
+
+2. Combines and processes data:
+   - Sorts all records by timestamp
+   - Handles gaps between segments
+   - Adjusts distance values for continuity
+   - Properly accumulates all metrics
+
+**Metric Accumulation:**
+1. **Time and Distance:**
+   - Total Duration: Actual elapsed time including stops
+   - Moving Time: Time spent with speed > 0
+   - True distance accumulation across segments
+   - Proper handling of segment transitions
+
+2. **Power Analysis:**
+   - Weighted average power across all records
+   - True maximum power from all segments
+   - Overall normalized power calculation
+   - Single TSS calculation using complete dataset
+   - Proper handling of FTP changes
+
+3. **Heart Rate Analysis:**
+   - Weighted average heart rate across all records
+   - True maximum heart rate from all segments
+   - Proper handling of heart rate transitions
+
+4. **Elevation Analysis:**
+   - Per-segment elevation gain calculation
+   - Proper accumulation avoiding gap issues
+   - Handles altitude resets between segments
+
+**Accumulators Used:**
+```python
+total_calories = 0       # Sum of all segments
+total_distance = 0       # Accumulated true distance
+total_elevation_gain = 0 # Sum of all positive elevation changes
+total_duration = 0       # Total elapsed time
+total_moving_time = 0    # Time spent moving (speed > 0)
+weighted_power_sum = 0   # For true average power calculation
+weighted_hr_sum = 0      # For true average heart rate calculation
+max_power = 0           # Track overall maximum
+max_hr = 0              # Track overall maximum
+total_records = 0       # Count of data points for averaging
+```
+
+**Visualization:**
+- Creates a combined plot showing:
+  - Power output (blue line)
+  - Heart rate (red line)
+  - Speed (green line)
+  - Vertical dashed lines indicating segment transitions
+  - Clear marking of ride segments
+
+**Data Export:**
+- Saves merged data to CSV with date-based filename
+- Creates visualization plot with segment indicators
+- Maintains data integrity across segment boundaries
+
+**Usage:**
+```python
+# Example usage in menu option 8
+selected_files = ["ride1.fit", "ride2.fit", "ride3.fit"]
+merge_rides(selected_files)
+```
+
+**Output Files:**
+- CSV: `merged_ride_YYYYMMDD.csv`
+- Plot: `merged_ride_YYYYMMDD.png`
+
+**Output Metrics:**
+```
+Merged Ride Summary:
+Date: YYYY-MM-DD
+Total Duration: XXX.X minutes
+Moving Time: XXX.X minutes
+Total Distance: XX.XX km
+Total Elevation Gain: XXX.X m
+Average Power: XXX.X W        # Weighted average
+Normalized Power: XXX.X W     # Calculated from complete dataset
+Maximum Power: XXX.X W        # True maximum
+TSS: XXX.X                    # Calculated using complete dataset
+Average Heart Rate: XXX.X bpm # Weighted average
+Maximum Heart Rate: XXX.X bpm # True maximum
+Total Calories: XXXX kcal     # Sum of all segments
+```
+
+This function ensures accurate analysis of rides that were split into multiple recordings, maintaining the integrity of all performance metrics and providing a comprehensive view of the entire activity. The implementation carefully handles the accumulation of each metric to ensure accuracy across segment boundaries and gaps, with special attention to time tracking and TSS calculations.
+
 ## Main Function
 
 ### `main()`
