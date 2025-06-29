@@ -1142,6 +1142,385 @@ def load_rider_stats() -> dict:
         'weight': RIDER_WEIGHT
     }
 
+def analyze_gym_session(fit_filename: str, show_plots: bool = False) -> dict:
+    """Analyzes a gym/strength training session from a FIT file.
+
+    This function processes FIT files from gym/strength training sessions,
+    focusing on heart rate data to analyze workout intensity, recovery periods,
+    and overall cardiovascular load.
+
+    Key metrics analyzed:
+        - Overall session duration
+        - Time in different heart rate zones
+        - Recovery periods (periods of lower heart rate)
+        - Maximum and average heart rate
+        - Heart rate variability and trends
+        - Estimated calorie burn
+        - Work-to-rest ratio
+
+    Args:
+        fit_filename: Name of the FIT file to process (must be in FIT_FOLDER)
+        show_plots: Whether to display plots during processing (default: False)
+
+    Returns:
+        dict: Dictionary containing processed metrics and statistics:
+            - filename: Name of the processed file
+            - date: Timestamp of the activity
+            - duration_min: Activity duration in minutes
+            - avg_hr: Average heart rate in bpm
+            - max_hr: Maximum heart rate in bpm
+            - recovery_periods: Number of detected recovery periods
+            - work_rest_ratio: Ratio of high-intensity to recovery periods
+            - calories: Estimated calories burned
+            - time_in_zones: Dictionary of time spent in each HR zone
+    """
+    fit_path = os.path.join(FIT_FOLDER, fit_filename)
+    if not os.path.exists(fit_path):
+        print(f"[ERROR] File not found: {fit_path}")
+        return
+
+    base_name = os.path.splitext(fit_filename)[0]
+    csv_path = os.path.join(CSV_FOLDER, f"{base_name}_gym.csv")
+    png_path = os.path.join(PNG_FOLDER, f"{base_name}_gym.png")
+
+    fitfile = FitFile(fit_path)
+
+    records = []
+    for record in fitfile.get_messages("record"):
+        data = {d.name: d.value for d in record}
+        records.append(data)
+
+    if not records:
+        print(f"[ERROR] No data records found in {fit_filename}")
+        return
+
+    df = pd.DataFrame(records)
+    
+    # Initialize metrics dictionary
+    metrics = {
+        "filename": fit_filename,
+        "date": None,
+        "duration_min": None,
+        "avg_hr": None,
+        "max_hr": None,
+        "recovery_periods": 0,
+        "work_rest_ratio": None,
+        "calories": 0,
+        "time_in_zones": {}
+    }
+
+    # Basic validation
+    if "timestamp" not in df.columns or "heart_rate" not in df.columns:
+        print("[ERROR] Required heart rate data not found in file")
+        return metrics
+
+    # Convert timestamp
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    
+    # Calculate session duration
+    duration_sec = (df["timestamp"].max() - df["timestamp"].min()).total_seconds()
+    metrics["duration_min"] = duration_sec / 60
+    metrics["date"] = df["timestamp"].min()
+
+    # Heart rate analysis
+    if "heart_rate" in df.columns:
+        # Basic HR stats
+        metrics["avg_hr"] = df["heart_rate"].mean()
+        metrics["max_hr"] = df["heart_rate"].max()
+        
+        # Add HR zones
+        df["hr_zone"] = df["heart_rate"].apply(get_hr_zone)
+        
+        # Calculate time in zones
+        zone_counts = df["hr_zone"].value_counts()
+        total_records = len(df)
+        metrics["time_in_zones"] = {
+            zone: {"seconds": count, "percentage": (count/total_records)*100}
+            for zone, count in zone_counts.items()
+        }
+
+        # Detect recovery periods
+        # A recovery period is defined as HR dropping below 65% of max HR for at least 30 seconds
+        recovery_threshold = HR_MAX * 0.65
+        df["is_recovery"] = df["heart_rate"] < recovery_threshold
+        
+        # Use rolling window to find sustained recovery periods (30 seconds)
+        window_size = 30  # 30 seconds assuming 1-second recording intervals
+        df["sustained_recovery"] = df["is_recovery"].rolling(window=window_size, min_periods=window_size).mean() == 1
+        
+        # Count recovery periods (transitions from work to recovery)
+        recovery_transitions = df["sustained_recovery"].diff() == 1
+        metrics["recovery_periods"] = recovery_transitions.sum()
+
+        # Calculate work-to-rest ratio
+        total_recovery_time = df["sustained_recovery"].sum()
+        total_work_time = len(df) - total_recovery_time
+        metrics["work_rest_ratio"] = total_work_time / total_recovery_time if total_recovery_time > 0 else float('inf')
+
+    # Get calories if available
+    for msg in fitfile.get_messages("session"):
+        for d in msg:
+            if d.name == "total_calories":
+                metrics["calories"] = d.value
+
+    # Create visualization
+    plt.figure(figsize=(15, 10))
+
+    # Heart Rate Plot
+    plt.subplot(2, 1, 1)
+    plt.plot(df["timestamp"], df["heart_rate"], label="Heart Rate", color="red")
+    plt.title("Gym Session Heart Rate Analysis")
+    plt.xlabel("Time")
+    plt.ylabel("Heart Rate (bpm)")
+    plt.grid(True)
+    plt.legend()
+
+    # Heart Rate Zone Distribution
+    plt.subplot(2, 1, 2)
+    zone_data = pd.Series(metrics["time_in_zones"]).apply(lambda x: x["percentage"])
+    zone_data.plot(kind="bar")
+    plt.title("Time in Heart Rate Zones")
+    plt.xlabel("Zone")
+    plt.ylabel("Percentage of Time")
+    plt.tight_layout()
+
+    # Save plots
+    plt.savefig(png_path)
+    if show_plots:
+        plt.show()
+    plt.close()
+
+    # Save processed data
+    df.to_csv(csv_path, index=False)
+
+    # Print analysis summary
+    print(f"\nGym Session Analysis for {fit_filename}")
+    print(f"Duration: {metrics['duration_min']:.1f} minutes")
+    print(f"Average Heart Rate: {metrics['avg_hr']:.1f} bpm")
+    print(f"Maximum Heart Rate: {metrics['max_hr']:.1f} bpm")
+    print(f"Recovery Periods: {metrics['recovery_periods']}")
+    print(f"Work-to-Rest Ratio: {metrics['work_rest_ratio']:.2f}")
+    print(f"Calories Burned: {metrics['calories']}")
+    
+    print("\nTime in Heart Rate Zones:")
+    for zone, data in metrics["time_in_zones"].items():
+        print(f"{zone}: {data['percentage']:.1f}% ({data['seconds']} seconds)")
+
+    return metrics
+
+def merge_rides(fit_files: list) -> None:
+    """Merges multiple FIT files from the same day into a single analysis.
+
+    This function combines data from multiple FIT files, typically used when
+    a single ride was recorded as multiple segments. It processes the files
+    in chronological order and combines their metrics while handling:
+        - Total distance calculation
+        - Cumulative elevation gain
+        - Power and heart rate continuity
+        - Overall time and duration
+        - Combined workout stress calculation
+
+    Args:
+        fit_files: List of FIT filenames to merge (must be in FIT_FOLDER)
+
+    Returns:
+        None: Results are saved to files and summary is printed to console
+    """
+    if not fit_files:
+        print("[ERROR] No files provided for merging")
+        return
+
+    print("\nMerging rides...")
+    
+    # Initialize accumulators for all metrics
+    all_records = []
+    total_calories = 0
+    total_distance = 0
+    total_elevation_gain = 0
+    total_moving_time = 0  # Time when actually moving (speed > 0)
+    weighted_power_sum = 0  # For calculating true average power
+    weighted_hr_sum = 0     # For calculating true average heart rate
+    moving_power_sum = 0    # Power sum only when moving
+    moving_hr_sum = 0       # HR sum only when moving
+    moving_records = 0      # Count of records when moving
+    max_power = 0
+    max_hr = 0
+    total_records = 0
+    earliest_timestamp = None
+    latest_timestamp = None
+    
+    # Process each file in chronological order
+    for fit_file in fit_files:
+        fit_path = os.path.join(FIT_FOLDER, fit_file)
+        try:
+            fitfile = FitFile(fit_path)
+            
+            # Get records from this file
+            file_records = []
+            start_distance = None
+            end_distance = None
+            segment_records = 0
+            
+            for record in fitfile.get_messages("record"):
+                data = {d.name: d.value for d in record}
+                if "distance" in data:
+                    if start_distance is None:
+                        start_distance = data["distance"]
+                    end_distance = data["distance"]
+                if "timestamp" in data:
+                    timestamp = pd.to_datetime(data["timestamp"])
+                    if earliest_timestamp is None or timestamp < earliest_timestamp:
+                        earliest_timestamp = timestamp
+                    if latest_timestamp is None or timestamp > latest_timestamp:
+                        latest_timestamp = timestamp
+                
+                # Only count power and HR when actually moving
+                is_moving = data.get("speed", 0) > 0.5  # More than 0.5 m/s (1.8 km/h)
+                if is_moving:
+                    total_moving_time += 1  # Assuming 1-second recording intervals
+                    moving_records += 1
+                    
+                    if "power" in data and data["power"] is not None:
+                        power = min(data["power"], 1500)  # Cap power at 1500W to filter spikes
+                        max_power = max(max_power, power)
+                        moving_power_sum += power
+                        
+                    if "heart_rate" in data and data["heart_rate"] is not None:
+                        max_hr = max(max_hr, data["heart_rate"])
+                        moving_hr_sum += data["heart_rate"]
+                
+                segment_records += 1
+                file_records.append(data)
+            
+            # Calculate segment metrics
+            if start_distance is not None and end_distance is not None:
+                segment_distance = end_distance - start_distance
+                total_distance += segment_distance
+            
+            # Calculate segment elevation gain
+            if file_records and "altitude" in file_records[0]:
+                segment_elevation = sum(max(0, file_records[i+1]["altitude"] - file_records[i]["altitude"]) 
+                                     for i in range(len(file_records)-1))
+                total_elevation_gain += segment_elevation
+            
+            if file_records:
+                # Adjust distance values to be continuous
+                if all_records and "distance" in file_records[0]:
+                    distance_offset = total_distance - file_records[0]["distance"]
+                    for record in file_records:
+                        if "distance" in record:
+                            record["distance"] += distance_offset
+                all_records.extend(file_records)
+                total_records += segment_records
+                
+            # Get calories if available
+            for msg in fitfile.get_messages("session"):
+                for d in msg:
+                    if d.name == "total_calories":
+                        total_calories += d.value or 0
+                        
+        except Exception as e:
+            print(f"[ERROR] Failed to process {fit_file}: {str(e)}")
+            continue
+    
+    if not all_records:
+        print("[ERROR] No valid records found in any of the files")
+        return
+        
+    # Convert to DataFrame and sort by timestamp
+    df = pd.DataFrame(all_records)
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df = df.sort_values("timestamp").reset_index(drop=True)
+    
+    # Calculate total duration from earliest to latest timestamp
+    total_duration = (latest_timestamp - earliest_timestamp).total_seconds() / 60  # Convert to minutes
+    
+    # Generate base name for output files using date
+    date_str = df["timestamp"].min().strftime("%Y%m%d")
+    base_name = f"merged_ride_{date_str}"
+    csv_path = os.path.join(CSV_FOLDER, f"{base_name}.csv")
+    png_path = os.path.join(PNG_FOLDER, f"{base_name}.png")
+    
+    # Calculate final averages (using moving time only)
+    avg_power = moving_power_sum / moving_records if moving_records > 0 else 0
+    avg_hr = moving_hr_sum / moving_records if moving_records > 0 else 0
+    
+    # Calculate overall normalized power and TSS using moving time
+    if "power" in df.columns:
+        # Filter for moving periods
+        moving_mask = df["speed"] > 0.5
+        moving_power = df.loc[moving_mask, "power"]
+        overall_np = calculate_normalized_power(moving_power)
+        
+        if FTP > 0:
+            overall_if = overall_np / FTP
+            overall_tss = (total_moving_time * overall_np * overall_if) / (FTP * 3600) * 100
+        else:
+            overall_tss = 0
+    else:
+        overall_np = 0
+        overall_tss = 0
+    
+    print("\nMerged Ride Summary:")
+    print(f"Date: {df['timestamp'].min().strftime('%Y-%m-%d')}")
+    print(f"Total Duration: {total_duration:.1f} minutes")
+    print(f"Moving Time: {total_moving_time/60:.1f} minutes")
+    print(f"Total Distance: {total_distance/1000:.2f} km")
+    print(f"Total Elevation Gain: {total_elevation_gain:.1f} m")
+    
+    if "power" in df.columns:
+        print(f"Average Power (while moving): {avg_power:.1f} W")
+        print(f"Normalized Power: {overall_np:.1f} W")
+        print(f"Maximum Power: {max_power:.1f} W")
+        print(f"TSS: {overall_tss:.1f}")
+    
+    if "heart_rate" in df.columns:
+        print(f"Average Heart Rate (while moving): {avg_hr:.1f} bpm")
+        print(f"Maximum Heart Rate: {max_hr:.1f} bpm")
+    
+    if total_calories > 0:
+        print(f"Total Calories: {total_calories} kcal")
+    
+    # Create visualization
+    plt.figure(figsize=(12, 8))
+    
+    # Plot available metrics
+    if "power" in df.columns:
+        plt.plot(df["timestamp"], df["power"], label="Power (W)", color="blue")
+    
+    if "heart_rate" in df.columns:
+        plt.plot(df["timestamp"], df["heart_rate"], label="Heart Rate (bpm)", 
+                color="red", alpha=0.7)
+    
+    if "speed" in df.columns:
+        speed_kmh = df["speed"] * 3.6
+        plt.plot(df["timestamp"], speed_kmh, label="Speed (km/h)", 
+                color="green", alpha=0.7)
+    
+    plt.title(f"Merged Ride Analysis - {date_str}")
+    plt.xlabel("Time")
+    plt.ylabel("Value")
+    plt.legend()
+    plt.grid(True)
+    
+    # Add vertical lines between original ride segments
+    ride_starts = [df["timestamp"].iloc[0]]
+    for i in range(1, len(df)):
+        if (df["timestamp"].iloc[i] - df["timestamp"].iloc[i-1]).total_seconds() > 60:
+            ride_starts.append(df["timestamp"].iloc[i])
+            plt.axvline(x=df["timestamp"].iloc[i], color='gray', 
+                       linestyle='--', alpha=0.5)
+    
+    plt.tight_layout()
+    plt.savefig(png_path)
+    plt.close()
+    
+    # Save processed data
+    df.to_csv(csv_path, index=False)
+    
+    print(f"\n[OK] Saved merged data to {csv_path}")
+    print(f"[OK] Saved merged plot to {png_path}")
+
 def main() -> None:
     """Main program loop for the cycling workout analysis tool.
 
@@ -1151,36 +1530,14 @@ def main() -> None:
 
     Menu Options:
         0. Exit Program
-        1. Process individual FIT files:
-           - Extract and analyze workout metrics
-           - Generate visualizations
-           - Export data to CSV
-           - Detect and analyze climbs
-
-        2. Compare two rides:
-           - Side-by-side metric comparison
-           - Comparative visualizations
-           - Performance analysis
-
-        3. Create overview of all rides:
-           - Generate summary CSV
-           - Calculate aggregate statistics
-           - Track long-term progress
-
-        4. Weekly training summary:
-           - Process recent activities
-           - Calculate training load
-           - Show progress indicators
-
-        5. Update rider statistics:
-           - Modify FTP, weight, heart rate values
-           - Save configuration for future sessions
-
-    The program handles file selection, data processing, and error conditions
-    while providing clear feedback and progress information.
-
-    Returns:
-        None: Program runs until user selects exit option
+        1. Process individual FIT files
+        2. Get a weekly summary
+        3. Process all FIT files
+        4. Create overview CSV
+        5. Compare two rides
+        6. Update rider statistics
+        7. Analyze gym session
+        8. Merge rides from same day
     """
     # Load saved rider stats at startup
     stats = load_rider_stats()
@@ -1200,8 +1557,10 @@ def main() -> None:
         print("4. Create overview CSV of all rides")
         print("5. Compare two rides")
         print("6. Update rider statistics")
+        print("7. Analyze gym session")
+        print("8. Merge rides from same day")
 
-        choice = input("\nEnter your choice (0-6): ").strip()
+        choice = input("\nEnter your choice (0-8): ").strip()
 
         if choice == "0":
             print("\nExiting program. Goodbye!")
@@ -1255,8 +1614,50 @@ def main() -> None:
                 print("[ERROR] Invalid selection")
         elif choice == "6":
             update_rider_stats()
+        elif choice == "7":
+            print("\nAvailable .fit files:")
+            fit_files = sorted(glob.glob(os.path.join(FIT_FOLDER, "*.fit")))
+            if not fit_files:
+                print("[ERROR] No .fit files found in the fit-files folder")
+                continue
+                
+            for i, file in enumerate(fit_files, 1):
+                print(f"{i}. {os.path.basename(file)}")
+            
+            try:
+                idx = int(input("\nSelect gym session number: ")) - 1
+                if 0 <= idx < len(fit_files):
+                    analyze_gym_session(os.path.basename(fit_files[idx]), show_plots=True)
+                else:
+                    print("[ERROR] Invalid selection")
+            except (ValueError, IndexError):
+                print("[ERROR] Invalid selection")
+        elif choice == "8":
+            print("\nAvailable .fit files:")
+            fit_files = sorted(glob.glob(os.path.join(FIT_FOLDER, "*.fit")))
+            if not fit_files:
+                print("[ERROR] No .fit files found in the fit-files folder")
+                continue
+                
+            for i, file in enumerate(fit_files, 1):
+                print(f"{i}. {os.path.basename(file)}")
+            
+            try:
+                print("\nEnter the numbers of the rides to merge (comma-separated):")
+                print("Example: 1,2,3")
+                selections = input("Ride numbers: ").strip()
+                indices = [int(x.strip()) - 1 for x in selections.split(",")]
+                
+                # Validate all indices
+                if all(0 <= idx < len(fit_files) for idx in indices):
+                    selected_files = [os.path.basename(fit_files[idx]) for idx in indices]
+                    merge_rides(selected_files)
+                else:
+                    print("[ERROR] Invalid selection")
+            except (ValueError, IndexError):
+                print("[ERROR] Invalid selection")
         else:
-            print("\n[ERROR] Invalid choice. Please enter a number between 0 and 6.")
+            print("\n[ERROR] Invalid choice. Please enter a number between 0 and 8.")
 
         input("\nPress Enter to continue...")
 
