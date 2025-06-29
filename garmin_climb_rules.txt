@@ -1,0 +1,110 @@
+GARMIN CLIMB DETECTION RULES
+============================
+
+This document outlines the climb detection criteria used in the 220 Cycling Analysis Tool,
+which are based on Garmin's climb detection algorithm.
+
+OVERVIEW
+--------
+A climb is considered significant if it meets ALL of the following criteria:
+- Minimum horizontal distance: 300 meters
+- Minimum elevation gain: 10 meters  
+- Average gradient: ≥3%
+
+DETAILED CRITERIA
+-----------------
+
+1. MINIMUM CLIMB DISTANCE
+   - Value: 300 meters
+   - Description: The horizontal distance of the climb must be at least 300 meters
+   - Purpose: Filters out short, steep sections that aren't true climbs
+
+2. MINIMUM ELEVATION GAIN
+   - Value: 10 meters
+   - Description: The total elevation gain from start to end of climb
+   - Purpose: Ensures the climb has meaningful vertical gain
+
+3. MINIMUM AVERAGE GRADIENT
+   - Value: 3.0%
+   - Description: The average gradient over the entire climb must be ≥3%
+   - Calculation: (elevation_gain / climb_distance) * 100
+   - Purpose: Distinguishes climbs from gradual inclines
+
+4. GRADIENT SMOOTHING
+   - Method: 10-point moving average
+   - Purpose: Reduces noise in gradient calculations
+   - Implementation: Uses rolling window with center=True
+
+5. DESCENT ALLOWANCE WITHIN CLIMBS
+   - Maximum cumulative descent: 5 meters
+   - Description: Allows small descents within a climb without ending it
+   - Purpose: Handles undulating climbs with minor downhills
+
+6. FLAT SECTION THRESHOLD
+   - Value: 1.0%
+   - Description: Gradients below 1% are considered flat
+   - Purpose: Allows flat sections within climbs without ending them
+
+CLIMB DETECTION ALGORITHM
+-------------------------
+
+1. GRADIENT CALCULATION
+   - Calculate gradient between consecutive data points
+   - Formula: gradient = (altitude_diff / distance_diff) * 100
+   - Apply 10-point moving average smoothing
+
+2. CLIMB START DETECTION
+   - Trigger: When smoothed gradient ≥ 3.0%
+   - Reset cumulative descent counter
+   - Mark start index
+
+3. CLIMB CONTINUATION RULES
+   - Strong climbing (gradient ≥ 3%): Continue climb, reset descent counter
+   - Flat section (1% ≤ gradient < 3%): Continue climb, don't update end point
+   - Descending (gradient < 0%): Add to cumulative descent
+   - If cumulative descent > 5m: End climb
+
+4. CLIMB END DETECTION
+   - When cumulative descent exceeds 5 meters
+   - When gradient drops below 1% for extended period
+   - At end of ride data
+
+5. VALIDATION
+   - Verify minimum distance (300m)
+   - Verify minimum elevation gain (10m)
+   - Verify minimum average gradient (3%)
+   - Calculate final metrics if all criteria met
+
+CALCULATED METRICS
+------------------
+
+For each valid climb, the following metrics are calculated:
+
+- start_idx: Index where climb begins
+- end_idx: Index where climb ends  
+- distance: Climb distance in meters
+- elevation_gain: Total elevation gain in meters
+- avg_gradient: Average gradient as percentage
+- max_gradient: Maximum gradient as percentage
+- start_distance: Distance from ride start in km
+- duration: Climb duration in minutes
+- avg_power: Average power during climb (if available)
+- max_power: Maximum power during climb (if available)
+- avg_hr: Average heart rate during climb (if available)
+- max_hr: Maximum heart rate during climb (if available)
+
+IMPLEMENTATION NOTES
+-------------------
+
+- The algorithm processes data point by point
+- Uses potential end points to handle flat sections within climbs
+- Handles edge cases like rides ending during climbs
+- Provides comprehensive metrics for climb analysis
+- Integrates with power and heart rate data when available
+
+REFERENCES
+----------
+- Based on Garmin Connect climb detection algorithm
+- Implemented in analyze_fit.py function: analyze_climbs()
+- Used for ride analysis and visualization
+- Supports climb highlighting in generated plots 

@@ -71,6 +71,47 @@ Analyzes climbs in the ride using Garmin's climb detection criteria:
    - Power metrics (if available)
    - Heart rate metrics (if available)
 
+### `analyze_climbs_offmeta(df, garmin_climbs=None)`
+
+Analyzes climbs using relaxed "off-meta" criteria to capture climbs missed by strict Garmin rules.
+
+**Off-Meta Criteria Sets:**
+1. **Short but Steep Climbs**: 150m distance, 8m gain, ≥4% gradient
+2. **Long but Gentle Climbs**: 500m distance, 15m gain, ≥2% gradient
+3. **Undulating Climbs**: 400m distance, 12m gain, ≥2.5% gradient, 10m descent allowance
+4. **Urban/Stop-Start Climbs**: 200m distance, 6m gain, ≥3.5% gradient, traffic-aware
+
+**Parameters:**
+- `df`: Pandas DataFrame containing ride data
+- `garmin_climbs`: Optional list of already-detected Garmin climbs to avoid overlap
+
+**Implementation:**
+1. Runs Garmin climb detection first (if not provided)
+2. Identifies sections not covered by Garmin climbs
+3. Applies multiple off-meta criteria sets to remaining sections
+4. Categorizes climbs by type (punchy, gradual, rolling, urban, mountain)
+5. Assigns confidence scores (60-90%) based on criteria match
+6. Handles traffic-aware detection for urban riding
+
+**Returns:**
+- Dictionary containing:
+  - `garmin_climbs`: Standard Garmin-detected climbs
+  - `offmeta_climbs`: Off-meta detected climbs with categories
+  - `all_climbs`: Combined list with confidence indicators
+  - `climb_summary`: Summary statistics for both types
+
+**Visualization Integration:**
+- Different colors for Garmin (yellow) vs off-meta (orange) climbs
+- Confidence indicators in plots
+- Separate summary sections for each climb type
+- Context-aware application based on ride characteristics
+
+**Usage:**
+- Complementary to standard climb analysis
+- Captures climbs meaningful to different riding styles
+- Provides comprehensive climb coverage
+- Supports urban, mountain, and mixed terrain riding
+
 ## Power Calculations
 
 ### `calculate_normalized_power(power_series)`

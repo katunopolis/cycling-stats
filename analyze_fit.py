@@ -266,6 +266,265 @@ def analyze_climbs(df: pd.DataFrame) -> list:
     
     return climbs
 
+def analyze_climbs_offmeta(df: pd.DataFrame, garmin_climbs: list = None) -> dict:
+    """Analyzes climbs using relaxed "off-meta" criteria to capture climbs missed by strict Garmin rules.
+
+    This function implements alternative climb detection criteria that relax the standard
+    Garmin rules to capture climbs that are meaningful to riders but don't meet the
+    official Garmin climb detection standards.
+
+    Off-Meta Criteria Sets:
+        1. Short but Steep Climbs: 150m distance, 8m gain, ≥4% gradient
+        2. Long but Gentle Climbs: 500m distance, 15m gain, ≥2% gradient
+        3. Undulating Climbs: 400m distance, 12m gain, ≥2.5% gradient, 10m descent allowance
+        4. Urban/Stop-Start Climbs: 200m distance, 6m gain, ≥3.5% gradient, traffic-aware
+
+    Args:
+        df: Pandas DataFrame containing ride data with at least 'altitude' and 'distance' columns
+        garmin_climbs: Optional list of already-detected Garmin climbs to avoid overlap
+
+    Returns:
+        dict: Dictionary containing:
+            - garmin_climbs: Standard Garmin-detected climbs
+            - offmeta_climbs: Off-meta detected climbs with categories
+            - all_climbs: Combined list with confidence indicators
+            - climb_summary: Summary statistics for both types
+    """
+    if 'altitude' not in df.columns or 'distance' not in df.columns:
+        return None
+    
+    # Get Garmin climbs if not provided
+    if garmin_climbs is None:
+        garmin_climbs = analyze_climbs(df) or []
+    
+    # Calculate gradient (reuse from Garmin analysis)
+    distance_diff = df['distance'].diff()
+    altitude_diff = df['altitude'].diff()
+    df['gradient'] = (altitude_diff / distance_diff * 100).fillna(0)
+    df['gradient_smooth'] = df['gradient'].rolling(window=10, center=True).mean().fillna(0)
+    
+    # Create mask for sections already covered by Garmin climbs
+    garmin_mask = pd.Series([False] * len(df))
+    for climb in garmin_climbs:
+        garmin_mask.iloc[climb['start_idx']:climb['end_idx']+1] = True
+    
+    # Off-meta criteria sets
+    offmeta_criteria = [
+        {
+            'name': 'Short but Steep',
+            'min_distance': 150,
+            'min_elevation': 8,
+            'min_gradient': 4.0,
+            'max_descent': 5,
+            'flat_threshold': 1.0,
+            'confidence': 85
+        },
+        {
+            'name': 'Long but Gentle',
+            'min_distance': 500,
+            'min_elevation': 15,
+            'min_gradient': 2.0,
+            'max_descent': 8,
+            'flat_threshold': 0.5,
+            'confidence': 75
+        },
+        {
+            'name': 'Undulating',
+            'min_distance': 400,
+            'min_elevation': 12,
+            'min_gradient': 2.5,
+            'max_descent': 10,
+            'flat_threshold': 0.5,
+            'confidence': 80
+        },
+        {
+            'name': 'Urban/Stop-Start',
+            'min_distance': 200,
+            'min_elevation': 6,
+            'min_gradient': 3.5,
+            'max_descent': 6,
+            'flat_threshold': 1.0,
+            'confidence': 70
+        }
+    ]
+    
+    offmeta_climbs = []
+    
+    # Apply each criteria set to non-Garmin sections
+    for criteria in offmeta_criteria:
+        # Find sections not covered by Garmin climbs
+        available_sections = []
+        start_idx = None
+        
+        for i in range(len(df)):
+            if not garmin_mask.iloc[i]:
+                if start_idx is None:
+                    start_idx = i
+            elif start_idx is not None:
+                available_sections.append((start_idx, i-1))
+                start_idx = None
+        
+        # Add final section if needed
+        if start_idx is not None:
+            available_sections.append((start_idx, len(df)-1))
+        
+        # Analyze each available section
+        for section_start, section_end in available_sections:
+            section_df = df.iloc[section_start:section_end+1].copy()
+            
+            # Detect climbs in this section using current criteria
+            section_climbs = _detect_climbs_in_section(
+                section_df, 
+                criteria, 
+                section_start,
+                garmin_mask
+            )
+            
+            for climb in section_climbs:
+                climb['category'] = criteria['name']
+                climb['confidence'] = criteria['confidence']
+                climb['type'] = 'offmeta'
+                offmeta_climbs.append(climb)
+    
+    # Remove overlapping climbs (keep the one with higher confidence)
+    offmeta_climbs = _remove_overlapping_climbs(offmeta_climbs)
+    
+    # Add type and confidence to Garmin climbs
+    for climb in garmin_climbs:
+        climb['category'] = 'Garmin Standard'
+        climb['confidence'] = 100
+        climb['type'] = 'garmin'
+    
+    # Combine all climbs
+    all_climbs = garmin_climbs + offmeta_climbs
+    all_climbs.sort(key=lambda x: x['start_idx'])
+    
+    # Create summary
+    climb_summary = {
+        'total_climbs': len(all_climbs),
+        'garmin_climbs': len(garmin_climbs),
+        'offmeta_climbs': len(offmeta_climbs),
+        'categories': {}
+    }
+    
+    # Count by category
+    for climb in all_climbs:
+        category = climb['category']
+        if category not in climb_summary['categories']:
+            climb_summary['categories'][category] = 0
+        climb_summary['categories'][category] += 1
+    
+    return {
+        'garmin_climbs': garmin_climbs,
+        'offmeta_climbs': offmeta_climbs,
+        'all_climbs': all_climbs,
+        'climb_summary': climb_summary
+    }
+
+def _detect_climbs_in_section(section_df: pd.DataFrame, criteria: dict, section_start: int, garmin_mask: pd.Series) -> list:
+    """Helper function to detect climbs in a specific section using given criteria."""
+    climbs = []
+    in_climb = False
+    climb_start_idx = 0
+    potential_end_idx = 0
+    cumulative_descent = 0
+    
+    for i in range(1, len(section_df)):
+        current_gradient = section_df['gradient_smooth'].iloc[i]
+        actual_idx = section_start + i
+        
+        # Skip if this point is already covered by a Garmin climb
+        if garmin_mask.iloc[actual_idx]:
+            if in_climb:
+                in_climb = False
+            continue
+        
+        if not in_climb:
+            if current_gradient >= criteria['min_gradient']:
+                in_climb = True
+                climb_start_idx = i
+                cumulative_descent = 0
+                potential_end_idx = i
+        else:
+            if current_gradient >= criteria['min_gradient']:
+                potential_end_idx = i
+                cumulative_descent = 0
+            elif current_gradient >= criteria['flat_threshold']:
+                pass  # Continue climb
+            elif current_gradient < 0:
+                cumulative_descent -= section_df['altitude'].diff().iloc[i]
+                if cumulative_descent > criteria['max_descent']:
+                    in_climb = False
+            else:
+                potential_end_idx = i
+            
+            if not in_climb or i == len(section_df) - 1:
+                # Calculate climb metrics
+                climb_distance = (section_df['distance'].iloc[potential_end_idx] - 
+                                section_df['distance'].iloc[climb_start_idx])
+                elevation_gain = (section_df['altitude'].iloc[potential_end_idx] - 
+                                section_df['altitude'].iloc[climb_start_idx])
+                
+                # Verify criteria
+                if (climb_distance >= criteria['min_distance'] and 
+                    elevation_gain >= criteria['min_elevation']):
+                    
+                    avg_gradient = elevation_gain / climb_distance * 100
+                    if avg_gradient >= criteria['min_gradient']:
+                        climb_segment = section_df.iloc[climb_start_idx:potential_end_idx+1]
+                        
+                        climb_data = {
+                            'start_idx': section_start + climb_start_idx,
+                            'end_idx': section_start + potential_end_idx,
+                            'distance': climb_distance,
+                            'elevation_gain': elevation_gain,
+                            'avg_gradient': avg_gradient,
+                            'max_gradient': climb_segment['gradient_smooth'].max(),
+                            'start_distance': section_df['distance'].iloc[climb_start_idx] / 1000,
+                            'duration': (section_df['timestamp'].iloc[potential_end_idx] - 
+                                       section_df['timestamp'].iloc[climb_start_idx]).total_seconds() / 60,
+                        }
+                        
+                        # Add power and heart rate metrics if available
+                        if 'power' in section_df.columns:
+                            climb_data['avg_power'] = climb_segment['power'].mean()
+                            climb_data['max_power'] = climb_segment['power'].max()
+                            
+                        if 'heart_rate' in section_df.columns:
+                            climb_data['avg_hr'] = climb_segment['heart_rate'].mean()
+                            climb_data['max_hr'] = climb_segment['heart_rate'].max()
+                        
+                        climbs.append(climb_data)
+                
+                in_climb = False
+    
+    return climbs
+
+def _remove_overlapping_climbs(climbs: list) -> list:
+    """Remove overlapping climbs, keeping the one with higher confidence."""
+    if not climbs:
+        return climbs
+    
+    # Sort by confidence (descending) and start index
+    climbs.sort(key=lambda x: (-x['confidence'], x['start_idx']))
+    
+    non_overlapping = []
+    for climb in climbs:
+        overlaps = False
+        for existing in non_overlapping:
+            # Check if climbs overlap
+            if (climb['start_idx'] <= existing['end_idx'] and 
+                climb['end_idx'] >= existing['start_idx']):
+                overlaps = True
+                break
+        
+        if not overlaps:
+            non_overlapping.append(climb)
+    
+    # Sort by start index for final order
+    non_overlapping.sort(key=lambda x: x['start_idx'])
+    return non_overlapping
+
 def calculate_normalized_speed(speed_series: pd.Series) -> float:
     """Calculates normalized speed by excluding stopped time.
 
@@ -530,6 +789,43 @@ def process_fit_file(fit_filename: str, show_plots: bool = False) -> dict:
             df.loc[start_idx:end_idx, 'climb_gradient'] = climb['avg_gradient']
             df.loc[start_idx:end_idx, 'climb_duration'] = climb['duration']
 
+    # Analyze climbs using both Garmin and off-meta criteria
+    climb_analysis = analyze_climbs_offmeta(df)
+    if climb_analysis:
+        garmin_climbs = climb_analysis['garmin_climbs']
+        offmeta_climbs = climb_analysis['offmeta_climbs']
+        all_climbs = climb_analysis['all_climbs']
+        climb_summary = climb_analysis['climb_summary']
+        
+        # Initialize climb columns with default values
+        df['climb_number'] = 0
+        df['in_climb'] = False
+        df['climb_type'] = 'none'
+        df['climb_category'] = 'none'
+        df['climb_confidence'] = 0
+        df['climb_distance'] = 0.0
+        df['climb_elevation'] = 0.0
+        df['climb_gradient'] = 0.0
+        df['climb_duration'] = 0.0
+        
+        # Fill in climb data for all climbs
+        for i, climb in enumerate(all_climbs, 1):
+            start_idx = climb['start_idx']
+            end_idx = climb['end_idx']
+            
+            # Mark the climb segment
+            df.loc[start_idx:end_idx, 'climb_number'] = i
+            df.loc[start_idx:end_idx, 'in_climb'] = True
+            df.loc[start_idx:end_idx, 'climb_type'] = climb['type']
+            df.loc[start_idx:end_idx, 'climb_category'] = climb['category']
+            df.loc[start_idx:end_idx, 'climb_confidence'] = climb['confidence']
+            
+            # Add climb metrics for the segment
+            df.loc[start_idx:end_idx, 'climb_distance'] = climb['distance']
+            df.loc[start_idx:end_idx, 'climb_elevation'] = climb['elevation_gain']
+            df.loc[start_idx:end_idx, 'climb_gradient'] = climb['avg_gradient']
+            df.loc[start_idx:end_idx, 'climb_duration'] = climb['duration']
+
     # Save the processed data
     df.to_csv(csv_path, index=False)
     print(f"[OK] Saved CSV: {csv_path}")
@@ -552,17 +848,31 @@ def process_fit_file(fit_filename: str, show_plots: bool = False) -> dict:
     # Get current handles and labels
     handles, labels = plt.gca().get_legend_handles_labels()
     
-    # Highlight climb sections in the plot
-    if climbs:
-        # Create a custom patch for the legend
-        yellow_patch = mpatches.Patch(color='yellow', alpha=0.2, label='Climbs')
+    # Highlight climb sections in the plot with different colors
+    if climb_analysis and all_climbs:
+        # Create custom patches for the legend
+        garmin_patch = mpatches.Patch(color='yellow', alpha=0.3, label='Garmin Climbs')
+        offmeta_patch = mpatches.Patch(color='orange', alpha=0.3, label='Off-Meta Climbs')
         
+        for climb in all_climbs:
+            start_time = df['timestamp'].iloc[climb['start_idx']]
+            end_time = df['timestamp'].iloc[climb['end_idx']]
+            
+            # Use different colors for Garmin vs off-meta climbs
+            if climb['type'] == 'garmin':
+                plt.axvspan(start_time, end_time, color='yellow', alpha=0.3)
+            else:  # offmeta
+                plt.axvspan(start_time, end_time, color='orange', alpha=0.3)
+        
+        # Add patches to legend
+        handles.append(garmin_patch)
+        handles.append(offmeta_patch)
+    elif climbs:  # Fallback to old method if only Garmin climbs
+        yellow_patch = mpatches.Patch(color='yellow', alpha=0.2, label='Climbs')
         for climb in climbs:
             start_time = df['timestamp'].iloc[climb['start_idx']]
             end_time = df['timestamp'].iloc[climb['end_idx']]
             plt.axvspan(start_time, end_time, color='yellow', alpha=0.2)
-        
-        # Add the yellow patch to the legend
         handles.append(yellow_patch)
             
     plt.title("Activity Metrics Over Time")
@@ -634,9 +944,36 @@ def process_fit_file(fit_filename: str, show_plots: bool = False) -> dict:
             elevation_gain = df["altitude"].diff().clip(lower=0).sum()
             print(f"  Elevation Gain: {elevation_gain:.1f} m")
             
-            # Analyze climbs
-            climbs = analyze_climbs(df)
-            if climbs:
+            # Display comprehensive climb analysis
+            if climb_analysis and all_climbs:
+                print(f"\nClimb Analysis Summary:")
+                print(f"  Total Climbs: {climb_summary['total_climbs']}")
+                print(f"  Garmin Climbs: {climb_summary['garmin_climbs']}")
+                print(f"  Off-Meta Climbs: {climb_summary['offmeta_climbs']}")
+                
+                print(f"\nClimb Categories:")
+                for category, count in climb_summary['categories'].items():
+                    print(f"  {category}: {count}")
+                
+                print(f"\nDetailed Climb Information:")
+                for i, climb in enumerate(all_climbs, 1):
+                    print(f"\nClimb {i} ({climb['type'].upper()} - {climb['category']}):")
+                    print(f"  Confidence: {climb['confidence']}%")
+                    print(f"  Start: {climb['start_distance']:.1f} km")
+                    print(f"  Length: {climb['distance']:.0f} m")
+                    print(f"  Duration: {climb['duration']:.1f} min")
+                    print(f"  Elevation Gain: {climb['elevation_gain']:.0f} m")
+                    print(f"  Average Gradient: {climb['avg_gradient']:.1f}%")
+                    print(f"  Maximum Gradient: {climb['max_gradient']:.1f}%")
+                    
+                    if 'avg_power' in climb:
+                        print(f"  Average Power: {climb['avg_power']:.0f} W")
+                        print(f"  Maximum Power: {climb['max_power']:.0f} W")
+                    
+                    if 'avg_hr' in climb:
+                        print(f"  Average HR: {climb['avg_hr']:.0f} bpm")
+                        print(f"  Maximum HR: {climb['max_hr']:.0f} bpm")
+            elif climbs:  # Fallback to old method
                 print("\nSignificant Climbs (Garmin Criteria):")
                 for i, climb in enumerate(climbs, 1):
                     print(f"\nClimb {i}:")
