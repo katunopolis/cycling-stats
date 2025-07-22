@@ -46,6 +46,21 @@ SET 4: URBAN/STOP-START CLIMBS
 - Allows for traffic stops (speed < 1 m/s for up to 30 seconds)
 - Purpose: Captures climbs interrupted by traffic lights
 
+SET 5: Very Long and Easy Climbs (Ultra-Relaxed)
+- Minimum distance: 2000 meters (2 km)
+- No maximum distance
+- Minimum elevation gain: 8 meters (reduced from 12m)
+- Average gradient: ≥0.5% (reduced from 0.7%)
+- Maximum descent allowance: 25 meters within the climb (increased from 15m)
+- Flat section threshold: 0.1% (reduced from 0.3%)
+- Maximum flat section length: 500 meters (new parameter)
+- Interruption tolerance: 200 meters (new parameter - allows brief descents/flat sections)
+
+These climbs are very long, steady, and extremely gentle, often found towards the end of endurance rides. 
+They are significant for training load and fatigue, even if not steep. The ultra-relaxed criteria 
+capture climbs that might be missed by all other rules but are still meaningful to riders.
+The algorithm focuses on overall upward trend rather than continuous climbing.
+
 DETAILED OFF-META PARAMETERS
 ----------------------------
 
