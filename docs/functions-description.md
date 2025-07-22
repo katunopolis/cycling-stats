@@ -465,6 +465,61 @@ idx = int(input("\nSelect ride number: ")) - 1
    - Enter new values or press Enter to keep current
    - Review saved configuration
 
+## Logging User Actions
+
+### `log_user_action(action, params=None)`
+
+Logs all user actions (menu selections and their execution) with date and time to a JSON log file, supporting log rotation every 10 days.
+
+**Purpose:**
+- Records every menu action and its parameters for audit and debugging
+- Logs file creation events (CSV, PNG, etc.) with file type, path, and context (e.g., which .fit file was processed)
+- Ensures traceability of user interactions with the CLI and file outputs
+- Follows best practices for structured logging (JSON lines)
+
+**Parameters:**
+- `action`: String describing the user action (e.g., 'Analyze single ride', 'Exit program', 'File created')
+- `params`: Optional dictionary of relevant parameters (e.g., selected file, menu choice, file type, file path, source .fit file)
+
+**Implementation:**
+- Log entries are appended to `logs/logs.json` in the project root
+- Each entry includes:
+  - `timestamp`: ISO 8601 string of the action time
+  - `action`: Action name
+  - `params`: Dictionary of parameters (may be empty)
+- The `logs` directory is created if it does not exist
+- Every 10 days, the log file is rotated (archived with a timestamp) and a new log file is started
+- If the log file is corrupt or unreadable, it is rotated automatically
+- The function is robust to file errors and prints a warning if logging fails
+
+**Integration:**
+- Called at every menu selection and before executing each menu action in `main()`
+- Called after creating new files (CSV, PNG, etc.) in all relevant functions (e.g., `process_fit_file`, `create_overview_csv`, `merge_rides`, `analyze_gym_session`)
+- Example usage:
+  ```python
+  log_user_action('Analyze single ride', {'file': fit_files[idx]})
+  log_user_action('Exit program')
+  log_user_action('Menu selection', {'choice': choice})
+  log_user_action('File created', {'type': 'csv', 'path': csv_path, 'source_fit': fit_filename})
+  ```
+
+**Log File Example:**
+```json
+{"timestamp": "2024-07-17T12:34:56.789012", "action": "Analyze single ride", "params": {"file": "20250717.fit"}}
+{"timestamp": "2024-07-17T12:35:10.123456", "action": "Exit program", "params": {}}
+{"timestamp": "2024-07-17T12:36:00.654321", "action": "File created", "params": {"type": "csv", "path": "csv-files/20250717.csv", "source_fit": "20250717.fit"}}
+```
+
+**Log Rotation:**
+- When the first entry in the current log file is older than 10 days, the file is archived (renamed with a timestamp) and a new log file is started
+- Archived logs are kept in the same `logs` directory
+
+**Best Practices:**
+- Uses structured JSON for easy parsing and analysis
+- Appends logs for each run, never overwrites
+- Robust to errors and file corruption
+- Follows recommendations from Python logging best practices guides
+
 ## Speed Calculations
 
 ### `calculate_normalized_speed(speed_series)`

@@ -34,6 +34,7 @@ import numpy as np
 import glob
 import matplotlib.patches as mpatches
 import json
+from datetime import datetime, timedelta
 
 # === CONFIGURATION ===
 # Training zones and physiological parameters
@@ -278,6 +279,7 @@ def analyze_climbs_offmeta(df: pd.DataFrame, garmin_climbs: list = None) -> dict
         2. Long but Gentle Climbs: 500m distance, 15m gain, ≥2% gradient
         3. Undulating Climbs: 400m distance, 12m gain, ≥2.5% gradient, 10m descent allowance
         4. Urban/Stop-Start Climbs: 200m distance, 6m gain, ≥3.5% gradient, traffic-aware
+        5. Very Long and Easy Climbs: 2000m distance, 12m gain, ≥0.7% gradient, max 15m descent, 0.3% flat threshold
 
     Args:
         df: Pandas DataFrame containing ride data with at least 'altitude' and 'distance' columns
@@ -345,7 +347,18 @@ def analyze_climbs_offmeta(df: pd.DataFrame, garmin_climbs: list = None) -> dict
             'max_descent': 6,
             'flat_threshold': 1.0,
             'confidence': 70
-        }
+        },
+        {
+            'name': 'Very Long and Easy',
+            'min_distance': 2000,  # 2 km
+            'min_elevation': 8,    # reduced from 12m
+            'min_gradient': 0.5,   # reduced from 0.7%
+            'max_descent': 25,     # increased from 15m
+            'flat_threshold': 0.1, # reduced from 0.3%
+            'max_flat_length': 500, # new parameter
+            'interruption_tolerance': 200, # new parameter
+            'confidence': 55       # reduced confidence for ultra-relaxed rule
+        },
     ]
     
     offmeta_climbs = []
@@ -428,6 +441,8 @@ def _detect_climbs_in_section(section_df: pd.DataFrame, criteria: dict, section_
     climb_start_idx = 0
     potential_end_idx = 0
     cumulative_descent = 0
+    interruption_start = None
+    interruption_length = 0
     
     for i in range(1, len(section_df)):
         current_gradient = section_df['gradient_smooth'].iloc[i]
@@ -445,17 +460,40 @@ def _detect_climbs_in_section(section_df: pd.DataFrame, criteria: dict, section_
                 climb_start_idx = i
                 cumulative_descent = 0
                 potential_end_idx = i
+                interruption_start = None
+                interruption_length = 0
         else:
             if current_gradient >= criteria['min_gradient']:
+                # Strong climbing section, update potential end and reset interruption
                 potential_end_idx = i
                 cumulative_descent = 0
+                interruption_start = None
+                interruption_length = 0
             elif current_gradient >= criteria['flat_threshold']:
-                pass  # Continue climb
+                # Flat-ish section, continue climb but don't update end
+                if interruption_start is None:
+                    interruption_start = i
+                interruption_length = i - interruption_start
+                
+                # Check if flat section is too long
+                if 'max_flat_length' in criteria and interruption_length > criteria['max_flat_length']:
+                    in_climb = False
             elif current_gradient < 0:
+                # Descending section
                 cumulative_descent -= section_df['altitude'].diff().iloc[i]
-                if cumulative_descent > criteria['max_descent']:
+                
+                # Start tracking interruption
+                if interruption_start is None:
+                    interruption_start = i
+                interruption_length = i - interruption_start
+                
+                # Check interruption tolerance
+                if 'interruption_tolerance' in criteria and interruption_length > criteria['interruption_tolerance']:
+                    in_climb = False
+                elif cumulative_descent > criteria['max_descent']:
                     in_climb = False
             else:
+                # Very shallow section, use as potential end
                 potential_end_idx = i
             
             if not in_climb or i == len(section_df) - 1:
@@ -752,6 +790,17 @@ def process_fit_file(fit_filename: str, show_plots: bool = False) -> dict:
     # Create DataFrame with available columns
     df = df[available_cols].copy()
     df["timestamp"] = pd.to_datetime(df["timestamp"])
+
+    # Filter out rows where both speed and power are zero (full stop)
+    # Do this before any processing or conversion
+    if "speed" in df.columns and "power" in df.columns:
+        before = len(df)
+        # Keep rows where either speed or power is non-zero
+        df = df[~((df["speed"].fillna(0) == 0) & (df["power"].fillna(0) == 0))].copy()
+        df.reset_index(drop=True, inplace=True)
+        after = len(df)
+        removed = before - after
+        print(f"[INFO] Removed {removed} full stop rows (speed=0 and power=0) - {(removed/before*100):.1f}% of data")
     
     # Convert speed to km/h if available
     if "speed" in df.columns:
@@ -829,6 +878,7 @@ def process_fit_file(fit_filename: str, show_plots: bool = False) -> dict:
     # Save the processed data
     df.to_csv(csv_path, index=False)
     print(f"[OK] Saved CSV: {csv_path}")
+    log_user_action('File created', {'type': 'csv', 'path': csv_path, 'source_fit': fit_filename})
 
     # Create plots based on available data
     plt.figure(figsize=(12, 5))
@@ -886,6 +936,7 @@ def process_fit_file(fit_filename: str, show_plots: bool = False) -> dict:
     else:
         plt.close()
     print(f"[OK] Saved Plot: {png_path}")
+    log_user_action('File created', {'type': 'png', 'path': png_path, 'source_fit': fit_filename})
 
     # Print zone summaries if available
     if "power_zone" in df.columns:
@@ -1158,6 +1209,7 @@ def create_overview_csv() -> None:
         overview_path = os.path.join(CSV_FOLDER, "ride_overview.csv")
         overview_df.to_csv(overview_path, index=False)
         print(f"\n[OK] Created overview file: {overview_path}")
+        log_user_action('File created', {'type': 'csv', 'path': overview_path, 'source': 'overview'})
         
         # Print summary statistics
         print("\nOverview Summary:")
@@ -1224,6 +1276,23 @@ def compare_rides(fit_file1: str, fit_file2: str) -> None:
     # Convert timestamps
     df1["timestamp"] = pd.to_datetime(df1["timestamp"])
     df2["timestamp"] = pd.to_datetime(df2["timestamp"])
+    
+    # Filter out rows where both speed and power are zero (full stop) for both rides
+    if "speed" in df1.columns and "power" in df1.columns:
+        before = len(df1)
+        df1 = df1[~((df1["speed"].fillna(0) == 0) & (df1["power"].fillna(0) == 0))].copy()
+        df1.reset_index(drop=True, inplace=True)
+        after = len(df1)
+        removed = before - after
+        print(f"[INFO] Ride 1: Removed {removed} full stop rows (speed=0 and power=0) - {(removed/before*100):.1f}% of data")
+    
+    if "speed" in df2.columns and "power" in df2.columns:
+        before = len(df2)
+        df2 = df2[~((df2["speed"].fillna(0) == 0) & (df2["power"].fillna(0) == 0))].copy()
+        df2.reset_index(drop=True, inplace=True)
+        after = len(df2)
+        removed = before - after
+        print(f"[INFO] Ride 2: Removed {removed} full stop rows (speed=0 and power=0) - {(removed/before*100):.1f}% of data")
     
     # Calculate distance-based metrics
     if "distance" in df1.columns and "distance" in df2.columns:
@@ -1452,7 +1521,7 @@ def update_rider_stats() -> None:
 def load_rider_stats() -> dict:
     """Loads rider statistics from configuration file.
 
-    Attempts to load rider-specific values from 'rider_stats.json'.
+    Attempts to load rider-specific values from 'rider_config.txt'.
     If the file doesn't exist or is invalid, default values are used.
 
     Returns:
@@ -1464,10 +1533,34 @@ def load_rider_stats() -> dict:
             Returns default values if file cannot be loaded
     """
     try:
-        if os.path.exists('rider_stats.json'):
-            with open('rider_stats.json', 'r') as f:
-                stats = json.load(f)
+        config_path = os.path.join(os.path.dirname(__file__), "rider_config.txt")
+        if os.path.exists(config_path):
+            stats = {}
+            with open(config_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if '=' in line:
+                        key, value = line.split('=', 1)
+                        key = key.strip()
+                        value = value.strip()
+                        
+                        # Convert value to appropriate type
+                        if key == 'FTP':
+                            stats['ftp'] = int(value)
+                        elif key == 'HR_MAX':
+                            stats['hr_max'] = int(value)
+                        elif key == 'HR_REST':
+                            stats['hr_rest'] = int(value)
+                        elif key == 'WEIGHT':
+                            stats['weight'] = float(value)
+            
+            # Validate that we have all required values
+            if all(key in stats for key in ['ftp', 'hr_max', 'hr_rest', 'weight']):
                 return stats
+            else:
+                print("[WARNING] Incomplete configuration file, using default values")
+        else:
+            print("[WARNING] Configuration file not found, using default values")
     except Exception as e:
         print(f"[WARNING] Could not load rider stats: {str(e)}")
         print("Using default values")
@@ -1625,7 +1718,11 @@ def analyze_gym_session(fit_filename: str, show_plots: bool = False) -> dict:
     plt.savefig(png_path)
     if show_plots:
         plt.show()
-    plt.close()
+    else:
+        plt.close()
+    df.to_csv(csv_path, index=False)
+    log_user_action('File created', {'type': 'csv', 'path': csv_path, 'source_fit': fit_filename, 'session': 'gym'})
+    log_user_action('File created', {'type': 'png', 'path': png_path, 'source_fit': fit_filename, 'session': 'gym'})
 
     # Save processed data
     df.to_csv(csv_path, index=False)
@@ -1769,6 +1866,16 @@ def merge_rides(fit_files: list) -> None:
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     df = df.sort_values("timestamp").reset_index(drop=True)
     
+    # Filter out rows where both speed and power are zero (full stop)
+    if "speed" in df.columns and "power" in df.columns:
+        before = len(df)
+        # Keep rows where either speed or power is non-zero
+        df = df[~((df["speed"].fillna(0) == 0) & (df["power"].fillna(0) == 0))].copy()
+        df.reset_index(drop=True, inplace=True)
+        after = len(df)
+        removed = before - after
+        print(f"[INFO] Removed {removed} full stop rows (speed=0 and power=0) - {(removed/before*100):.1f}% of data")
+    
     # Calculate total duration from earliest to latest timestamp
     total_duration = (latest_timestamp - earliest_timestamp).total_seconds() / 60  # Convert to minutes
     
@@ -1856,7 +1963,46 @@ def merge_rides(fit_files: list) -> None:
     df.to_csv(csv_path, index=False)
     
     print(f"\n[OK] Saved merged data to {csv_path}")
+    log_user_action('File created', {'type': 'csv', 'path': csv_path, 'source': 'merge'})
     print(f"[OK] Saved merged plot to {png_path}")
+    log_user_action('File created', {'type': 'png', 'path': png_path, 'source': 'merge'})
+
+def log_user_action(action: str, params: dict = None):
+    """Logs user actions with timestamp to logs/logs.json, rotating every 10 days."""
+    logs_dir = os.path.join(os.path.dirname(__file__), 'logs')
+    os.makedirs(logs_dir, exist_ok=True)
+    now = datetime.now()
+    log_file = os.path.join(logs_dir, 'logs.json')
+
+    # Determine if log rotation is needed
+    rotate = False
+    if os.path.exists(log_file):
+        try:
+            with open(log_file, 'r', encoding='utf-8') as f:
+                first_line = f.readline()
+                if first_line:
+                    first_entry = json.loads(first_line)
+                    first_time = datetime.fromisoformat(first_entry['timestamp'])
+                    if (now - first_time).days >= 10:
+                        rotate = True
+        except Exception:
+            rotate = True  # If log is corrupt, rotate
+    if rotate:
+        # Archive old log file
+        archive_name = os.path.join(logs_dir, f"logs_{now.strftime('%Y%m%d_%H%M%S')}.json")
+        os.rename(log_file, archive_name)
+
+    # Prepare log entry
+    entry = {
+        'timestamp': now.isoformat(),
+        'action': action,
+        'params': params or {}
+    }
+    try:
+        with open(log_file, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(entry) + '\n')
+    except Exception as e:
+        print(f"[WARNING] Failed to write log: {e}")
 
 def main() -> None:
     """Main program loop for the cycling workout analysis tool.
@@ -1898,8 +2044,10 @@ def main() -> None:
         print("8. Merge rides from same day")
 
         choice = input("\nEnter your choice (0-8): ").strip()
+        log_user_action('Menu selection', {'choice': choice})
 
         if choice == "0":
+            log_user_action('Exit program')
             print("\nExiting program. Goodbye!")
             break
         elif choice == "1":
@@ -1916,21 +2064,26 @@ def main() -> None:
                 idx = int(input("\nSelect ride number: ")) - 1
                 if 0 <= idx < len(fit_files):
                     process_fit_file(os.path.basename(fit_files[idx]), show_plots=True)
+                    log_user_action('Analyze single ride', {'file': fit_files[idx]})
                 else:
                     print("[ERROR] Invalid selection")
             except (ValueError, IndexError):
                 print("[ERROR] Invalid selection")
         elif choice == "2":
+            log_user_action('Weekly summary', {'files': sorted(glob.glob(os.path.join(FIT_FOLDER, "*.fit")), reverse=True)[:7]})
             print("\nProcessing last 7 .fit files...")
             files = sorted(glob.glob(os.path.join(FIT_FOLDER, "*.fit")), reverse=True)[:7]
             weekly_summary(files)
         elif choice == "3":
+            log_user_action('Process all .fit files', {'files': sorted(glob.glob(os.path.join(FIT_FOLDER, "*.fit")))})
             print("\nProcessing all .fit files...")
             all_files = sorted(glob.glob(os.path.join(FIT_FOLDER, "*.fit")))
             weekly_summary(all_files)
         elif choice == "4":
+            log_user_action('Create overview CSV')
             create_overview_csv()
         elif choice == "5":
+            log_user_action('Compare two rides', {'file1': fit_files[idx1] if 'idx1' in locals() and 0 <= idx1 < len(fit_files) else None, 'file2': fit_files[idx2] if 'idx2' in locals() and 0 <= idx2 < len(fit_files) else None})
             print("\nAvailable .fit files:")
             fit_files = sorted(glob.glob(os.path.join(FIT_FOLDER, "*.fit")))
             if not fit_files:
@@ -1950,8 +2103,10 @@ def main() -> None:
             except (ValueError, IndexError):
                 print("[ERROR] Invalid selection")
         elif choice == "6":
+            log_user_action('Update rider statistics')
             update_rider_stats()
         elif choice == "7":
+            log_user_action('Analyze gym session', {'file': fit_files[idx] if 'idx' in locals() and 0 <= idx < len(fit_files) else None})
             print("\nAvailable .fit files:")
             fit_files = sorted(glob.glob(os.path.join(FIT_FOLDER, "*.fit")))
             if not fit_files:
@@ -1970,6 +2125,7 @@ def main() -> None:
             except (ValueError, IndexError):
                 print("[ERROR] Invalid selection")
         elif choice == "8":
+            log_user_action('Merge rides', {'files': selected_files if 'selected_files' in locals() else None})
             print("\nAvailable .fit files:")
             fit_files = sorted(glob.glob(os.path.join(FIT_FOLDER, "*.fit")))
             if not fit_files:
@@ -1994,6 +2150,7 @@ def main() -> None:
             except (ValueError, IndexError):
                 print("[ERROR] Invalid selection")
         else:
+            log_user_action('Invalid menu selection', {'input': choice})
             print("\n[ERROR] Invalid choice. Please enter a number between 0 and 8.")
 
         input("\nPress Enter to continue...")
